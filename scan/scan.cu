@@ -11,8 +11,15 @@
 
 #include "CycleTimer.h"
 
+#define THREADS 256
+
 
 extern float toBW(int bytes, float sec);
+
+
+int floordiv(int x, int y) {
+    return x / y + ((x % y) != 0);
+}
 
 
 /* Helper function to round up to a power of 2.
@@ -29,6 +36,36 @@ static inline int nextPow2(int n)
     return n;
 }
 
+/*
+ * for an array of size l, calculate chunk sum of chunk size. Sum is store at index {chunk_size * k, k = 1, 2, ...}
+ * chunk size should be a pow of 2
+ */
+__global__ void chunkSumKernel(int *data, int l, int chunk_size) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int dest = (idx + 1) * chunk_size - 1;
+    if (dest < l) {
+        data[dest] += data[dest - chunk_size / 2];
+    }
+}
+
+
+/*
+ * chunksize is a pow of 2
+ * x[k * chunksize] += x[k * chunksize - chunksize / 2]
+ * and swap value
+ */
+__global__ void addPrevKernel(int *data, int l, int chunk_size) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    int dest = (idx + 1) * chunk_size - 1;
+    if (dest < l) {
+        int src = dest - chunk_size / 2;
+        int tmp = data[dest];
+        data[dest] += data[src];
+        data[src] = tmp;
+    }
+}
+
+
 void exclusive_scan(int* device_data, int length)
 {
     /* TODO
@@ -43,6 +80,20 @@ void exclusive_scan(int* device_data, int length)
      * both the data array is sized to accommodate the next
      * power of 2 larger than the input.
      */
+
+    int full_len = nextPow2(length);
+    for (int chunk_size = 2; chunk_size < full_len; chunk_size <<= 1) {
+        int threads_needed = full_len / chunk_size;
+        chunkSumKernel<<<floordiv(threads_needed, THREADS), THREADS>>>(device_data, full_len, chunk_size);
+    }
+    // device_data[full_len - 1] = 0;
+    int const tmp = 0;
+    cudaMemcpy(device_data + (full_len - 1), &tmp, sizeof(int), cudaMemcpyHostToDevice);
+    for (int chunk_size = full_len; chunk_size > 1; chunk_size >>= 1) {
+        int threads_needed = full_len / chunk_size;
+        addPrevKernel<<<floordiv(threads_needed, THREADS), THREADS>>>(device_data, full_len, chunk_size);
+    }
+
 }
 
 /* This function is a wrapper around the code you will write - it copies the
