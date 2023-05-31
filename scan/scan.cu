@@ -13,6 +13,21 @@
 
 #define THREADS 256
 
+/*
+ * set a single value in a cuda array
+ */
+template<typename T>
+void set_cuda_arr(T* p, int idx, T v) {
+    cudaMemcpy(p + idx, &v, sizeof(T), cudaMemcpyHostToDevice);
+}
+
+template<typename T>
+T get_cuda_arr(T* p, int idx) {
+    T ret;
+    cudaMemcpy(&ret, p + idx, sizeof(T), cudaMemcpyDeviceToHost);
+    return ret;
+}
+
 
 extern float toBW(int bytes, float sec);
 
@@ -87,8 +102,7 @@ void exclusive_scan(int* device_data, int length)
         chunkSumKernel<<<floordiv(threads_needed, THREADS), THREADS>>>(device_data, full_len, chunk_size);
     }
     // device_data[full_len - 1] = 0;
-    int const tmp = 0;
-    cudaMemcpy(device_data + (full_len - 1), &tmp, sizeof(int), cudaMemcpyHostToDevice);
+    set_cuda_arr(device_data, full_len - 1, 0);
     for (int chunk_size = full_len; chunk_size > 1; chunk_size >>= 1) {
         int threads_needed = full_len / chunk_size;
         addPrevKernel<<<floordiv(threads_needed, THREADS), THREADS>>>(device_data, full_len, chunk_size);
@@ -160,6 +174,24 @@ double cudaScanThrust(int* inarray, int* end, int* resultarray) {
 }
 
 
+__global__ void findPeaksKernel(int *input, int *output, int l) {
+    int idx = threadIdx.x + blockDim.x * blockIdx.x;
+    int pos = idx + 1;  // exclude the first idx
+    if (pos < l - 1) {  // exclude the last (l - 1) position
+        int v = input[pos];
+        output[pos] = (v > input[pos - 1]) && (v > input[pos + 1]);
+    }
+}
+
+
+__global__ void place2startKernel(int *p, int l) {
+    int idx = threadIdx.x + blockDim.x * blockIdx.x;
+    int pos = idx + 1;
+    if (pos < l - 1 && p[pos] != p[pos + 1]) {
+        p[p[pos]] = pos;
+    }
+}
+
 
 int find_peaks(int *device_input, int length, int *device_output) {
     /* TODO:
@@ -176,7 +208,12 @@ int find_peaks(int *device_input, int length, int *device_output) {
      * it requires that. However, you must ensure that the results of
      * find_peaks are correct given the original length.
      */
-    return 0;
+    int blocks = floordiv(length, THREADS);
+    findPeaksKernel<<<blocks, THREADS>>>(device_input, device_output, length);
+    exclusive_scan(device_output, length);
+    place2startKernel<<<blocks, THREADS>>>(device_output, length);
+    // cudaThreadSynchronize();   // no need!
+    return get_cuda_arr(device_output, length - 1);
 }
 
 
