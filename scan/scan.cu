@@ -8,10 +8,27 @@
 #include <thrust/device_ptr.h>
 #include <thrust/device_malloc.h>
 #include <thrust/device_free.h>
+#include <iostream>
+#include <string>
+
+using std::cout;
+using std::string;
+using std::endl;
+using clock_value_t = long long;
 
 #include "CycleTimer.h"
 
+
 #define THREADS 256
+
+
+__device__ void sleep(clock_value_t sleep_cycles)
+{
+    clock_value_t start = clock64();
+    clock_value_t cycles_elapsed;
+    do { cycles_elapsed = clock64() - start; }
+    while (cycles_elapsed < sleep_cycles);
+}
 
 /*
  * set a single value in a cuda array
@@ -184,15 +201,25 @@ __global__ void findPeaksKernel(int *input, int *output, int l) {
 }
 
 
-__global__ void place2startKernel(int *p, int l) {
+__global__ void place2startKernel(int *input, int* output, int l) {
     int idx = threadIdx.x + blockDim.x * blockIdx.x;
     int pos = idx + 1;
-    if (pos < l - 1 && p[pos] != p[pos + 1]) {
-        p[p[pos]] = pos;
+    sleep(static_cast<int>(1. / pos) * 500000);
+    if (pos < l - 1 && input[pos] != input[pos + 1]) {
+        output[input[pos]] = pos;
     }
 }
 
 
+template<typename T>
+void print_arr(T* arr, int const l, string info = "") {
+    cout << info << '[';
+    for (int i = 0; i < l; i++) {
+        cout << get_cuda_arr(arr, i);
+        if (i != l - 1) cout << ", ";
+    }
+    cout << ']';
+}
 int find_peaks(int *device_input, int length, int *device_output) {
     /* TODO:
      * Finds all elements in the list that are greater than the elements before and after,
@@ -211,9 +238,19 @@ int find_peaks(int *device_input, int length, int *device_output) {
     int blocks = floordiv(length, THREADS);
     findPeaksKernel<<<blocks, THREADS>>>(device_input, device_output, length);
     exclusive_scan(device_output, length);
-    place2startKernel<<<blocks, THREADS>>>(device_output, length);
+
+    print_arr(device_output, length, "Output");
+    cout << endl;
+
+    place2startKernel<<<blocks, THREADS>>>(device_output, device_input, length);  // why this works here?
+
+    print_arr(device_input, length, "Input");
+    cout << endl;
     // cudaThreadSynchronize();   // no need!
-    return get_cuda_arr(device_output, length - 1);
+    int ret = get_cuda_arr(device_output, length - 1);
+    cudaMemcpy(device_output, device_input, sizeof(int) * ret, cudaMemcpyDeviceToDevice);
+    print_arr(device_output, length, "Output");
+    return ret;
 }
 
 
