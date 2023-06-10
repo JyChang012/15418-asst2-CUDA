@@ -27,6 +27,10 @@ private:
     float* cudaDeviceRadius;
     float* cudaDeviceImageData;
 
+    // buffers
+    int* isInTile;
+    int* relevantCircles;
+
 public:
 
     CudaRenderer();
