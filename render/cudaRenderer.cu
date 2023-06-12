@@ -458,7 +458,7 @@ __global__ void kernelRenderCircles() {
 
 
 __device__ __inline__ void
-shadePixelCustom(float2 pixelCenter, float3 p, float4 *imagePtr, float rad, float3 const* colorPtr) {
+shadePixelCustom(float2 const pixelCenter, float3 const p, float4& pixel, float const rad, float3 const* colorPtr) {
 
     float diffX = p.x - pixelCenter.x;
     float diffY = p.y - pixelCenter.y;
@@ -502,17 +502,15 @@ shadePixelCustom(float2 pixelCenter, float3 p, float4 *imagePtr, float rad, floa
     float oneMinusAlpha = 1.f - alpha;
 
     // BEGIN SHOULD-BE-ATOMIC REGION
-    // global memory read
 
-    float4 existingColor = *imagePtr;
-    float4 newColor;
-    newColor.x = alpha * rgb.x + oneMinusAlpha * existingColor.x;
-    newColor.y = alpha * rgb.y + oneMinusAlpha * existingColor.y;
-    newColor.z = alpha * rgb.z + oneMinusAlpha * existingColor.z;
-    newColor.w = alpha + existingColor.w;
+    pixel.x *= oneMinusAlpha;
+    pixel.y *= oneMinusAlpha;
+    pixel.z *= oneMinusAlpha;
 
-    // Global memory write
-    *imagePtr = newColor;
+    pixel.x += alpha * rgb.x;
+    pixel.y += alpha * rgb.y;
+    pixel.z += alpha * rgb.z;
+    pixel.w += alpha;
 
     // END SHOULD-BE-ATOMIC REGION
 }
@@ -610,8 +608,9 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
 
 
     int const tx = x / TILE, ty = y / TILE;
-    relevantCircles += tx * numberOfCircles + ty * numberOfCircles * X;
-    isInTile += tx * numberOfCircles + ty * numberOfCircles * X;
+    int const offset = tx * numberOfCircles + ty * numberOfCircles * X;
+    relevantCircles += offset;
+    isInTile += offset;
 
     // TODO: move this to constant memory!
     float const invWidth = 1.f / imageWidth;
@@ -641,13 +640,15 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
     int const totalThreads = blockDim.x * blockDim.y;
 
     int const moveAmount = floordiv(SHARED, totalThreads);
-    int const moveAmount3 = floordiv(3 * SHARED, totalThreads);
+
     __shared__ float tileRad[SHARED];
 
     __shared__ float tilePos[3 * SHARED];
+    float3* position3 = (float3*) cuConstRendererParams.position;
     float3* tilePos3 = (float3*) tilePos;
 
     __shared__ float tileCol[3 * SHARED];
+    float3* color3 = (float3*) cuConstRendererParams.color;
     float3 *tileCol3 = (float3*) tileCol;
 
     for (int i = 0; i < relevantSize; i += SHARED) {
@@ -657,29 +658,12 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
         int cpBg = i + linearIdx * moveAmount;
         int cpEd = min(ed, cpBg + moveAmount);
         for (int j = cpBg; j < cpEd; j++) {
-            /*
-            assert(j - i >= 0);
-            if (j - i >= SHARED) {
-                printf("j = %d, i = %d, cpBg = %d, cpEd = %d\n", j, i, cpBg, cpEd);
-                assert(j - i < SHARED);
-            }
-             */
-            tileRad[j - i] = cuConstRendererParams.radius[relevantCircles[j]];
-        }
-
-        cpBg = 3 * i + linearIdx * moveAmount3;
-        cpEd = min(ed * 3, cpBg + moveAmount3);
-        for (int j = cpBg; j < cpEd; j++) {
-            int const rpos = relevantCircles[j / 3] * 3 + j % 3;
-            int const wpos = j - 3 * i;
-            /*
-            assert(wpos >= 0);
-            assert(wpos < 3 * SHARED);
-             */
-            tilePos[wpos] = cuConstRendererParams.position[rpos];
+            int const circleIdx = relevantCircles[j];
+            tileRad[j - i] = cuConstRendererParams.radius[circleIdx];
+            tilePos3[j - i] = position3[circleIdx];
             if (cuConstRendererParams.sceneName != SNOWFLAKES
                 and cuConstRendererParams.sceneName != SNOWFLAKES_SINGLE_FRAME) {
-                tileCol[wpos] = cuConstRendererParams.color[rpos];
+                tileCol3[j - i] = color3[circleIdx];
             }
         }
 
@@ -689,7 +673,7 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
             for (int j = i; j < ed; j++) {
                 shadePixelCustom(pixelCenterNorm,
                                  tilePos3[j - i],
-                                 &pixel,
+                                 pixel,
                                  tileRad[j - i],
                                  tileCol3 + (j - i));
             }
@@ -963,6 +947,6 @@ CudaRenderer::render() {
     dim3 kernelBlockDim(blockSize, blockSize);
     computeTile<<<kernelGridDim, kernelBlockDim>>>(relevantCircles, isInTile, TW, TH);
 
-    cudaCheckError(cudaDeviceSynchronize());
+    //cudaCheckError(cudaDeviceSynchronize());
 
 }
