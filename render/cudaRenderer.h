@@ -28,8 +28,8 @@ private:
     float* cudaDeviceImageData;
 
     // buffers
-    int* isInTile;
-    int* relevantCircles;
+    uint* isInTile;
+    uint* relevantCircles;
 
 public:
 

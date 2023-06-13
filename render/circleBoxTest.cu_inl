@@ -1,6 +1,6 @@
 
 
-__device__ __inline__ int
+__device__ __inline__ uint
 circleInBoxConservative(
     float circleX, float circleY, float circleRadius,
     float boxL, float boxR, float boxT, float boxB)
@@ -19,7 +19,7 @@ circleInBoxConservative(
     }
 }
 
-__device__ __inline__ int
+__device__ __inline__ uint
 circleInBox(
     float circleX, float circleY, float circleRadius,
     float boxL, float boxR, float boxT, float boxB)

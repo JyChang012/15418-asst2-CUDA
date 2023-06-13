@@ -1,6 +1,8 @@
 #define TILE 64  // side size of tiles, note the image size is guaranteed to be multiple of 64
-#define SHARED 512
+#define SHARED 1024
+#define BLOCK 32  // block size for computeTile
 // #define DEBUG  // for debugging!
+#define SCAN_BLOCK_DIM 256  // needed by sharedMemExclusiveScan implementation
 
 #include <string>
 #include <algorithm>
@@ -26,13 +28,13 @@
 #include "util.h"
 #include "circleBoxTest.cu_inl"
 #include "cuErrCheck.h"  // for debugging
+#include "exclusiveScan.cu_inl"
 
 using std::printf;
 
 
-template<class T>
 __host__ __device__
-inline T floordiv(T a, T b) {
+inline uint floordiv(uint a, uint b) {
     return a / b + (a % b != 0);
 }
 
@@ -516,7 +518,7 @@ shadePixelCustom(float2 const pixelCenter, float3 const p, float4& pixel, float 
 }
 
 __global__
-void checkCirclesInTile(int *output, int X, int Y) {
+void checkCirclesInTile(uint *output, int X, int Y) {
     int const x = threadIdx.z + blockIdx.z * blockDim.z;  // width
     int const y = threadIdx.y + blockIdx.y * blockDim.y;  // height
     int const circle_idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -550,7 +552,60 @@ void checkCirclesInTile(int *output, int X, int Y) {
 
 
 __global__
-void scanLastDim(int *output, int X, int Y) {
+void scanLastDimShared(uint *output, int X, int Y) {
+    int const x = blockIdx.x;
+    int const y = blockIdx.y;  // BlockDim should be (N, 1, 1)
+    int const linearIdx = threadIdx.x;
+    int const numberOfCircles = cuConstRendererParams.numberOfCircles;
+    output += (x + y * X) * numberOfCircles;
+
+    __shared__ uint prefixSumInput[SCAN_BLOCK_DIM];
+    __shared__ uint prefixSumOutput[SCAN_BLOCK_DIM];
+    __shared__ uint prefixSumScratch[2 * SCAN_BLOCK_DIM];
+
+    __shared__ uint prev;
+    if (linearIdx == 0) {
+        prev = 0;
+        prefixSumInput[SCAN_BLOCK_DIM - 1] = 0;
+    }
+    uint const segSize = SCAN_BLOCK_DIM - 1;
+    for (int i = 0; i < numberOfCircles; i += segSize) {
+        int const ed = min(numberOfCircles, i + segSize);
+        // collaborative fetch
+        if (linearIdx + i < ed) {
+            prefixSumInput[linearIdx] = output[i + linearIdx] + (linearIdx == 0 ? prev : 0);
+        }
+
+        __syncthreads();
+
+        sharedMemExclusiveScan(linearIdx, prefixSumInput, prefixSumOutput, prefixSumScratch, SCAN_BLOCK_DIM);
+
+        __syncthreads();
+
+        if (linearIdx == SCAN_BLOCK_DIM - 1) {
+            prev = prefixSumOutput[SCAN_BLOCK_DIM - 1];
+        }
+
+        __syncthreads();
+
+        if (linearIdx + i < ed) {
+            output[linearIdx + i] = prefixSumOutput[linearIdx + 1];
+        }
+
+    }
+    /*
+    if (linearIdx == 0) {
+        printf("Block (%d, %d):", blockIdx.x, blockIdx.y);
+        for (int i = 0; i < min(2048, numberOfCircles); i++) {
+            printf(" %d", output[i]);
+        }
+        printf("\n");
+    }
+     */
+}
+
+__global__
+void scanLastDim(uint *output, int X, int Y) {
     /*
     int const x = threadIdx.x + blockIdx.x * blockDim.x;  // width
     int const y = threadIdx.y + blockIdx.y * blockDim.y;  // height
@@ -561,10 +616,10 @@ void scanLastDim(int *output, int X, int Y) {
                       + y * TILE * cuConstRendererParams.numberOfCircles;
     */
     // one thread per block!
-    int const x = blockIdx.x;  // width
-    int const y = blockIdx.y;  // height
+    uint const x = blockIdx.x;  // width
+    uint const y = blockIdx.y;  // height
 
-    int *start = output + (x * cuConstRendererParams.numberOfCircles
+    uint *start = output + (x * cuConstRendererParams.numberOfCircles
                            + y * cuConstRendererParams.numberOfCircles * X);
 
     thrust::inclusive_scan(thrust::device,
@@ -577,7 +632,7 @@ void scanLastDim(int *output, int X, int Y) {
  * input and output shape Y by X by # of circles
  */
 __global__
-void place2startKernel(int const *input, int *output, int X, int Y) {
+void place2startKernel(uint const *input, uint *output, int X, int Y) {
     int const x = threadIdx.z + blockIdx.z * blockDim.z;  // width
     int const y = threadIdx.y + blockIdx.y * blockDim.y;  // height
     int const pos = threadIdx.x + blockIdx.x * blockDim.x;
@@ -586,11 +641,11 @@ void place2startKernel(int const *input, int *output, int X, int Y) {
 
     if (x >= X or y >= Y or pos >= numberOfCircles) return;
 
-    int const offset = x * numberOfCircles + y * numberOfCircles * X;
+    uint const offset = x * numberOfCircles + y * numberOfCircles * X;
     input += offset;
     output += offset;
 
-    int const v = input[pos];
+    uint const v = input[pos];
     if (pos == 0 and v == 1 or pos > 0 and v != input[pos - 1]) {
         output[v - 1] = pos;
     }
@@ -598,7 +653,7 @@ void place2startKernel(int const *input, int *output, int X, int Y) {
 
 
 __global__
-void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) {
+void computeTile(uint const *relevantCircles, uint const *isInTile, int X, int Y) {
     int const x = threadIdx.x + blockIdx.x * blockDim.x;  // width
     int const y = threadIdx.y + blockIdx.y * blockDim.y;  // height
 
@@ -607,8 +662,8 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
     int const numberOfCircles = cuConstRendererParams.numberOfCircles;
 
 
-    int const tx = x / TILE, ty = y / TILE;
-    int const offset = tx * numberOfCircles + ty * numberOfCircles * X;
+    uint const tx = x / TILE, ty = y / TILE;
+    uint const offset = tx * numberOfCircles + ty * numberOfCircles * X;
     relevantCircles += offset;
     isInTile += offset;
 
@@ -635,29 +690,37 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
      * float *radius;
      */
     // note: we assume that TILE size is an integer multiple of block size
-    int const relevantSize = isInTile[numberOfCircles - 1];  // size of relevant circles
-    int const linearIdx = threadIdx.x + blockDim.x * threadIdx.y;
+    uint const relevantSize = isInTile[numberOfCircles - 1];  // size of relevant circles
+    uint const linearIdx = threadIdx.x + blockDim.x * threadIdx.y;
     // int const linearIdx =  threadIdx.y * blockDim.y + threadIdx.x;  // linear idx that form a warp!
-    // int const linearIdx =  threadIdx.y + blockDim.x * threadIdx.x;  // linear idx that form a warp!
-    int const totalThreads = blockDim.x * blockDim.y;
+    uint const totalThreads = blockDim.x * blockDim.y;
 
-    int const moveAmount = floordiv(SHARED, totalThreads);
+    uint const moveAmount = floordiv(SHARED, totalThreads);
 
-    __shared__ float tileRad[SHARED];
+    __shared__ float tileRad[BLOCK * BLOCK];
 
-    __shared__ float tilePos[3 * SHARED];
+    __shared__ float tilePos[3 * BLOCK * BLOCK];
     float3* position3 = (float3*) cuConstRendererParams.position;
     float3* tilePos3 = (float3*) tilePos;
 
-    __shared__ float tileCol[3 * SHARED];
+    __shared__ float tileCol[3 * BLOCK * BLOCK];
     float3* color3 = (float3*) cuConstRendererParams.color;
     float3 *tileCol3 = (float3*) tileCol;
 
-    for (int i = 0; i < relevantSize; i += SHARED) {
-        int const ed = min(relevantSize, i + SHARED);
+    for (uint i = 0; i < relevantSize; i += SHARED) {
+        uint const ed = min(relevantSize, i + SHARED);
 
         // fetch from global memory
-        // try using coalescing
+        if (linearIdx + i < ed) {
+            uint const circleIdx = relevantCircles[linearIdx + i];
+            tileRad[linearIdx] = cuConstRendererParams.radius[circleIdx];
+            tilePos3[linearIdx] = position3[circleIdx];
+            if (cuConstRendererParams.sceneName != SNOWFLAKES
+                and cuConstRendererParams.sceneName != SNOWFLAKES_SINGLE_FRAME) {
+                tileCol3[linearIdx] =  color3[circleIdx];
+            }
+        }
+        /*
         for (int from_i = i + linearIdx, to_i = linearIdx; from_i < ed; from_i += totalThreads, to_i += totalThreads) {
             int const circleIdx = relevantCircles[from_i];
             tileRad[to_i] = cuConstRendererParams.radius[circleIdx];
@@ -668,6 +731,7 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
             }
 
         }
+        */
         /*
         int cpBg = i + linearIdx * moveAmount;
         int cpEd = min(ed, cpBg + moveAmount);
@@ -684,7 +748,7 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
         __syncthreads();
 
         if (x < imageWidth and y < imageHeight) {
-            for (int j = i; j < ed; j++) {
+            for (uint j = i; j < ed; j++) {
                 shadePixelCustom(pixelCenterNorm,
                                  tilePos3[j - i],
                                  pixel,
@@ -865,8 +929,8 @@ CudaRenderer::setup() {
     // init buffer for storing intermediate results
     int const TW = floordiv(image->width, TILE);  // X
     int const TH = floordiv(image->height, TILE);  // Y
-    cudaCheckError(cudaMalloc(&isInTile, sizeof(int) * TH * TW * numberOfCircles));
-    cudaCheckError(cudaMalloc(&relevantCircles, sizeof(int) * TH * TW * numberOfCircles));
+    cudaCheckError(cudaMalloc(&isInTile, sizeof(uint) * TH * TW * numberOfCircles));
+    cudaCheckError(cudaMalloc(&relevantCircles, sizeof(uint) * TH * TW * numberOfCircles));
 
 }
 
@@ -934,13 +998,13 @@ CudaRenderer::advanceAnimation() {
 void
 CudaRenderer::render() {
     // W by H tiles, each has size TILE by TILE pixels
-    int const width = image->width;
-    int const height = image->height;
-    int const TW = floordiv(width, TILE);  // X
-    int const TH = floordiv(height, TILE);  // Y
+    uint const width = image->width;
+    uint const height = image->height;
+    uint const TW = floordiv(width, TILE);  // X
+    uint const TH = floordiv(height, TILE);  // Y
 
     // for each tile, check if each circle is within the tile, store a boolean
-    int const cBlock = 256, wBlock = 1, hBlock = 1;
+    uint const cBlock = 256, wBlock = 1, hBlock = 1;
     dim3 gridDim(
             floordiv(numberOfCircles, cBlock),
             floordiv(TH, hBlock),
@@ -950,17 +1014,17 @@ CudaRenderer::render() {
     checkCirclesInTile<<<gridDim, blockDim>>>(isInTile, TW, TH);
 
     // exclusive scan the output array
-    scanLastDim<<<dim3(TW, TH), 1>>>(isInTile, TW, TH);
+    // scanLastDim<<<dim3(TW, TH), 1>>>(isInTile, TW, TH);
+    scanLastDimShared<<<dim3(TW, TH), dim3(SCAN_BLOCK_DIM)>>>(isInTile, TW, TH);
 
     // place indices of one to start
     place2startKernel<<<gridDim, blockDim>>>(isInTile, relevantCircles, TW, TH);
 
     // launch kernel!
-    int const blockSize = 32;
-    dim3 kernelGridDim(floordiv(width, blockSize), floordiv(height, blockSize));
-    dim3 kernelBlockDim(blockSize, blockSize);
+    dim3 kernelGridDim(floordiv(width, BLOCK), floordiv(height, BLOCK));
+    dim3 kernelBlockDim(BLOCK, BLOCK);
     computeTile<<<kernelGridDim, kernelBlockDim>>>(relevantCircles, isInTile, TW, TH);
 
-    cudaCheckError(cudaDeviceSynchronize());
+    // cudaCheckError(cudaDeviceSynchronize());
 
 }
