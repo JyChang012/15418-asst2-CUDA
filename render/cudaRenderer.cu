@@ -637,6 +637,8 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
     // note: we assume that TILE size is an integer multiple of block size
     int const relevantSize = isInTile[numberOfCircles - 1];  // size of relevant circles
     int const linearIdx = threadIdx.x + blockDim.x * threadIdx.y;
+    // int const linearIdx =  threadIdx.y * blockDim.y + threadIdx.x;  // linear idx that form a warp!
+    // int const linearIdx =  threadIdx.y + blockDim.x * threadIdx.x;  // linear idx that form a warp!
     int const totalThreads = blockDim.x * blockDim.y;
 
     int const moveAmount = floordiv(SHARED, totalThreads);
@@ -655,6 +657,18 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
         int const ed = min(relevantSize, i + SHARED);
 
         // fetch from global memory
+        // try using coalescing
+        for (int from_i = i + linearIdx, to_i = linearIdx; from_i < ed; from_i += totalThreads, to_i += totalThreads) {
+            int const circleIdx = relevantCircles[from_i];
+            tileRad[to_i] = cuConstRendererParams.radius[circleIdx];
+            tilePos3[to_i] = position3[circleIdx];
+            if (cuConstRendererParams.sceneName != SNOWFLAKES
+                and cuConstRendererParams.sceneName != SNOWFLAKES_SINGLE_FRAME) {
+                tileCol3[to_i] = color3[circleIdx];
+            }
+
+        }
+        /*
         int cpBg = i + linearIdx * moveAmount;
         int cpEd = min(ed, cpBg + moveAmount);
         for (int j = cpBg; j < cpEd; j++) {
@@ -666,7 +680,7 @@ void computeTile(int const *relevantCircles, int const *isInTile, int X, int Y) 
                 tileCol3[j - i] = color3[circleIdx];
             }
         }
-
+        */
         __syncthreads();
 
         if (x < imageWidth and y < imageHeight) {
@@ -947,6 +961,6 @@ CudaRenderer::render() {
     dim3 kernelBlockDim(blockSize, blockSize);
     computeTile<<<kernelGridDim, kernelBlockDim>>>(relevantCircles, isInTile, TW, TH);
 
-    //cudaCheckError(cudaDeviceSynchronize());
+    cudaCheckError(cudaDeviceSynchronize());
 
 }
