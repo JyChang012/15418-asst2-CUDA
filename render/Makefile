@@ -12,7 +12,7 @@ all: $(EXECUTABLE)
 
 ARCH=$(shell uname | sed -e 's/-.*//g')
 OBJDIR=objs
-CXX=g++ -m64
+CXX=g++ -m64 -std=c++17
 CXXFLAGS=-O3 -Wall -g
 HOSTNAME=$(shell hostname)
 
@@ -25,7 +25,7 @@ LIBS += GL glut cudart
 LDLIBS  := $(addprefix -l, $(LIBS))
 LDFRAMEWORKS := $(addprefix -framework , $(FRAMEWORKS))
 
-NVCC=nvcc
+NVCC=nvcc -std=c++17
 
 OBJS=$(OBJDIR)/main.o $(OBJDIR)/display.o $(OBJDIR)/benchmark.o $(OBJDIR)/refRenderer.o \
      $(OBJDIR)/cudaRenderer.o $(OBJDIR)/noise.o $(OBJDIR)/ppm.o $(OBJDIR)/sceneLoader.o

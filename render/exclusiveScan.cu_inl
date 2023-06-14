@@ -70,8 +70,9 @@ inline __device__ uint warpScanExclusive(int threadIndex, uint idata, volatile u
     return warpScanInclusive(threadIndex, idata, sScratch, size) - idata;
 }
 
+
 __inline__ __device__ void
-sharedMemExclusiveScan(int threadIndex, uint* sInput, uint* sOutput, volatile uint* sScratch, uint size)
+sharedMemInclusiveScan(int threadIndex, uint* sInput, uint* sOutput, volatile uint* sScratch, uint size)
 {
     if (size > WARP_SIZE) {
 
@@ -101,10 +102,19 @@ sharedMemExclusiveScan(int threadIndex, uint* sInput, uint* sOutput, volatile ui
         //return updated warp scans with exclusive scan results
         __syncthreads();
 
-        sOutput[threadIndex] = warpResult + sScratch[threadIndex >> LOG2_WARP_SIZE] - idata;
+        sOutput[threadIndex] = warpResult + sScratch[threadIndex >> LOG2_WARP_SIZE];
 
     } else if (threadIndex < WARP_SIZE) {
         uint idata = sInput[threadIndex];
-        sOutput[threadIndex] = warpScanExclusive(threadIndex, idata, sScratch, size);
+        sOutput[threadIndex] = warpScanInclusive(threadIndex, idata, sScratch, size);
     }
+}
+
+
+__inline__ __device__ void
+sharedMemExclusiveScan(int threadIndex, uint* sInput, uint* sOutput, volatile uint* sScratch, uint size)
+{
+    sharedMemInclusiveScan(threadIndex, sInput, sOutput, sScratch, size);
+    sOutput[threadIndex] -= sInput[threadIndex];
+
 }
