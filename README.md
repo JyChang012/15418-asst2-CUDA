@@ -1,15 +1,17 @@
 # CMU 15-418/618, Spring 2023
 
-# Assignment 2
+Render scores
 
-This is the starter code for Assignment 2 of CMU class 15-418/618, Spring 2023
-
-Please review the course's policy on [academic
-integrity](http://www.cs.cmu.edu/~418/academicintegrity.html),
-regarding your obligation to keep your own solutions private from now
-until eternity.
-
-
-
-
-
+```
+-------------------------------------------------------------------------
+| Scene Name      | Target Time     | Your Time       | Score           |
+-------------------------------------------------------------------------
+| rgb             | 0.1856          | 0.1503          | 12              |
+| rand10k         | 1.9469          | 1.1864          | 12              |
+| rand100k        | 18.4834         | 10.8205         | 12              |
+| pattern         | 0.2717          | 0.1778          | 12              |
+| snowsingle      | 7.7070          | 2.3455          | 12              |
+| biglittle       | 14.1951         | 9.4323          | 12              |
+-------------------------------------------------------------------------
+|                                   | Total score:    | 72/72           |
+```
